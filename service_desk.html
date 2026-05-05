@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frizelo IT Manager</title>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        slate: {
+                            850: '#1e293b',
+                            900: '#0f172a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Socket.io -->
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+    <!-- jsPDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+</head>
+
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, createContext, useContext, useMemo, useRef } = React;
+
+        // --- CONSTANTS ---
+        const PRIORITIES = {
+            CRITICAL: { label: 'Crítica', color: 'bg-red-600 text-white', border: 'border-red-600' },
+            HIGH: { label: 'Alta', color: 'bg-orange-500 text-white', border: 'border-orange-500' },
+            MEDIUM: { label: 'Média', color: 'bg-yellow-500 text-white', border: 'border-yellow-500' },
+            LOW: { label: 'Baixa', color: 'bg-blue-500 text-white', border: 'border-blue-500' }
+        };
+
+        const STATUSES = {
+            OPEN: { label: 'Aberto', color: 'bg-slate-100 text-slate-700' },
+            IN_PROGRESS: { label: 'Em Andamento', color: 'bg-blue-100 text-blue-700' },
+            WAITING: { label: 'Pendente', color: 'bg-yellow-100 text-yellow-700' },
+            RESOLVED: { label: 'Concluído', color: 'bg-green-100 text-green-700' }
+        };
+
+        // --- COMPONENTS ---
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide && window.lucide.icons[name] && iconRef.current) {
+                    const svg = window.lucide.createElement(window.lucide.icons[name]);
+                    svg.setAttribute('width', size);
+                    svg.setAttribute('height', size);
+                    if (className) svg.setAttribute('class', `lucide lucide-${name} ${className}`);
+                    iconRef.current.innerHTML = '';
+                    iconRef.current.appendChild(svg);
+                }
+            }, [name, size, className]);
+            return <span ref={iconRef} className="inline-flex items-center justify-center" />;
+        };
+
+        // --- MOCK DATA GENERATORS ---
+        const generateInitialData = () => ({
+            tickets: [
+                { id: 101, title: 'Servidor de Arquivos Lento', priority: 'HIGH', status: 'OPEN', type: 'Incidente', assetId: 201, createdAt: new Date().toISOString() },
+                { id: 102, title: 'Solicitação de Mouse', priority: 'LOW', status: 'RESOLVED', type: 'Requisição', assetId: null, createdAt: new Date(Date.now() - 86400000).toISOString() },
+                { id: 103, title: 'Erro no ERP Frizelo', priority: 'CRITICAL', status: 'IN_PROGRESS', type: 'Incidente', assetId: 202, createdAt: new Date().toISOString() },
+                { id: 104, title: 'Renovação SSL Site', priority: 'MEDIUM', status: 'WAITING', type: 'Projeto', assetId: null, createdAt: new Date().toISOString() },
+            ],
+            assets: [
+                { id: 201, hostname: 'SRV-FILE-01', type: 'Servidor', brand: 'Dell', model: 'PowerEdge', serial: 'XYZ123', status: 'Em Uso', user: 'TI' },
+            ],
+            certificates: [
+                { id: 301, name: 'SSL Site Principal', provider: 'Let\'s Encrypt', expirationDate: new Date(Date.now() + 86400000 * 15).toISOString() },
+                { id: 302, name: 'Certificado A1 Financeiro', provider: 'Serasa', expirationDate: new Date(Date.now() + 86400000 * 120).toISOString() },
+            ],
+            kb: [
+                { id: 401, title: 'Configuração de VPN', category: 'Rede', content: 'Passo a passo...' },
+                { id: 402, title: 'Erro de Impressão', category: 'Hardware', content: 'Verificar toner...' },
+            ],
+            maintenance: []
+        });
+
+        // --- DATA PROVIDER ---
+        const DataContext = createContext(null);
+        const API_URL = 'http://localhost:5000/api';
+
+        const DataProvider = ({ children }) => {
+            const [data, setData] = useState({
+                tickets: [],
+                assets: [],
+                certificates: [],
+                kb: [],
+                maintenance: []
+            });
+            const [loading, setLoading] = useState(true);
+
+            const fetchData = async () => {
+                try {
+                    const [ticketsRes, assetsRes, certificatesRes, kbRes, maintenanceRes] = await Promise.all([
+                        fetch(`${API_URL}/tickets`),
+                        fetch(`${API_URL}/assets`),
+                        fetch(`${API_URL}/certificates`),
+                        fetch(`${API_URL}/kb`),
+                        fetch(`${API_URL}/maintenance`)
+                    ]);
+
+                    const tickets = await ticketsRes.json();
+                    const assets = await assetsRes.json();
+                    const certificates = await certificatesRes.json();
+                    const kb = await kbRes.json();
+                    const maintenance = await maintenanceRes.json();
+
+                    setData({ tickets, assets, certificates, kb, maintenance });
+                } catch (error) {
+                    console.error("Erro ao buscar dados:", error);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            useEffect(() => {
+                fetchData();
+            }, []);
+
+            const actions = {
+                addTicket: async (t) => {
+                    const res = await fetch(`${API_URL}/tickets`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(t) });
+                    if (res.ok) fetchData();
+                },
+                updateTicketStatus: async (id, status) => {
+                    const res = await fetch(`${API_URL}/tickets/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+                    if (res.ok) fetchData();
+                },
+                addAsset: async (a) => {
+                    const res = await fetch(`${API_URL}/assets`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(a) });
+                    if (res.ok) fetchData();
+                },
+                addCertificate: async (c) => {
+                    const res = await fetch(`${API_URL}/certificates`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
+                    if (res.ok) fetchData();
+                },
+                deleteItem: async (type, id) => {
+                    const res = await fetch(`${API_URL}/${type}/${id}`, { method: 'DELETE' });
+                    if (res.ok) fetchData();
+                },
+                addMaintenance: async (m) => {
+                    const res = await fetch(`${API_URL}/maintenance`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(m) });
+                    if (res.ok) fetchData();
+                },
+                updateMaintenance: async (id, updates) => {
+                    const res = await fetch(`${API_URL}/maintenance/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
+                    if (res.ok) fetchData();
+                },
+                updateAssetStatus: async (id, status) => {
+                    const res = await fetch(`${API_URL}/assets/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+                    if (res.ok) fetchData();
+                }
+            };
+
+            if (loading) return <div className="flex items-center justify-center h-screen text-slate-500">Carregando dados...</div>;
+
+            return (
+                <DataContext.Provider value={{ ...data, ...actions }}>
+                    {children}
+                </DataContext.Provider>
+            );
+        };
+
+        const useData = () => useContext(DataContext);
+
+        // --- SHARED COMPONENTS ---
+        const FilterBar = ({ onFilter, statusOptions, typeOptions }) => {
+            const [filters, setFilters] = useState({ search: '', status: '', type: '', dateStart: '', dateEnd: '' });
+
+            useEffect(() => {
+                onFilter(filters);
+            }, [filters]);
+
+            return (
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 mb-6 flex flex-wrap gap-4 items-end">
+                    <div className="flex-1 min-w-[200px]">
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Busca</label>
+                        <div className="relative">
+                            <span className="absolute left-3 top-2.5 text-slate-400"><Icon name="search" size={16} /></span>
+                            <input
+                                className="pl-9 pr-4 py-2 border border-slate-200 rounded-lg w-full text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                placeholder="Buscar..."
+                                value={filters.search}
+                                onChange={e => setFilters({ ...filters, search: e.target.value })}
+                            />
+                        </div>
+                    </div>
+                    {statusOptions && (
+                        <div className="w-40">
+                            <label className="block text-xs font-medium text-slate-500 mb-1">Status</label>
+                            <select
+                                className="w-full border border-slate-200 rounded-lg py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                value={filters.status}
+                                onChange={e => setFilters({ ...filters, status: e.target.value })}
+                            >
+                                <option value="">Todos</option>
+                                {statusOptions.map(o => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                        </div>
+                    )}
+                    {typeOptions && (
+                        <div className="w-40">
+                            <label className="block text-xs font-medium text-slate-500 mb-1">Tipo</label>
+                            <select
+                                className="w-full border border-slate-200 rounded-lg py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                                value={filters.type}
+                                onChange={e => setFilters({ ...filters, type: e.target.value })}
+                            >
+                                <option value="">Todos</option>
+                                {typeOptions.map(o => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                        </div>
+                    )}
+                    <div className="w-36">
+                        <label className="block text-xs font-medium text-slate-500 mb-1">De</label>
+                        <input
+                            type="date"
+                            className="w-full border border-slate-200 rounded-lg py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                            value={filters.dateStart}
+                            onChange={e => setFilters({ ...filters, dateStart: e.target.value })}
+                        />
+                    </div>
+                    <div className="w-36">
+                        <label className="block text-xs font-medium text-slate-500 mb-1">Até</label>
+                        <input
+                            type="date"
+                            className="w-full border border-slate-200 rounded-lg py-2 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                            value={filters.dateEnd}
+                            onChange={e => setFilters({ ...filters, dateEnd: e.target.value })}
+                        />
+                    </div>
+                </div>
+            );
+        };
+
+        const ReportButton = ({ data, columns, title, filename }) => {
+            const generatePDF = () => {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF();
+
+                doc.setFontSize(18);
+                doc.text(title, 14, 22);
+                doc.setFontSize(11);
+                doc.setTextColor(100);
+                doc.text(`Gerado em: ${new Date().toLocaleString()}`, 14, 30);
+
+                const tableColumn = columns.map(c => c.header);
+                const tableRows = data.map(item => columns.map(c => {
+                    const val = item[c.field];
+                    return c.format ? c.format(val) : val;
+                }));
+
+                doc.autoTable({
+                    head: [tableColumn],
+                    body: tableRows,
+                    startY: 40,
+                    theme: 'grid',
+                    styles: { fontSize: 8 },
+                    headStyles: { fillColor: [15, 23, 42] } // slate-900
+                });
+
+                doc.save(`${filename}.pdf`);
+            };
+
+            return (
+                <button onClick={generatePDF} className="bg-slate-100 text-slate-700 px-4 py-2 rounded-lg flex items-center space-x-2 hover:bg-slate-200 transition">
+                    <Icon name="file-text" size={18} />
+                    <span>PDF</span>
+                </button>
+            );
+        };
+
+        // --- VIEWS ---
+        const Dashboard = () => {
+            const { tickets, certificates, assets } = useData();
+
+            const stats = {
+                total: tickets.length,
+                critical: tickets.filter(t => t.priority === 'CRITICAL' && t.status !== 'RESOLVED').length,
+                expiring: certificates.filter(c => {
+                    const days = (new Date(c.expirationDate) - new Date()) / (1000 * 60 * 60 * 24);
+                    return days < 30 && days >= 0;
+                }).length,
+                expired: certificates.filter(c => new Date(c.expirationDate) < new Date()).length,
+                assetsStock: assets.filter(a => a.status === 'Disponível').length
+            };
+
+            return (
+                <div className="p-6 space-y-6">
+                    <h2 className="text-2xl font-bold text-slate-800">Visão Geral</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="text-sm text-slate-500">Chamados Abertos</p>
+                                    <h3 className="text-3xl font-bold text-slate-800">{stats.total}</h3>
+                                </div>
+                                <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Icon name="ticket" /></div>
+                            </div>
+                        </div>
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="text-sm text-slate-500">Críticos Pendentes</p>
+                                    <h3 className="text-3xl font-bold text-red-600">{stats.critical}</h3>
+                                </div>
+                                <div className="p-2 bg-red-50 text-red-600 rounded-lg"><Icon name="alert-circle" /></div>
+                            </div>
+                        </div>
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="text-sm text-slate-500">Certificados Alerta</p>
+                                    <h3 className="text-3xl font-bold text-orange-600">{stats.expiring + stats.expired}</h3>
+                                </div>
+                                <div className="p-2 bg-orange-50 text-orange-600 rounded-lg"><Icon name="shield-alert" /></div>
+                            </div>
+                        </div>
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="text-sm text-slate-500">Ativos Disponíveis</p>
+                                    <h3 className="text-3xl font-bold text-emerald-600">{stats.assetsStock}</h3>
+                                </div>
+                                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg"><Icon name="box" /></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const KanbanBoard = () => {
+            const { tickets, updateTicketStatus, addTicket } = useData();
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [filteredTickets, setFilteredTickets] = useState(tickets);
+
+            const handleFilter = (filters) => {
+                let res = tickets;
+                if (filters.search) {
+                    const term = filters.search.toLowerCase();
+                    res = res.filter(t => t.title.toLowerCase().includes(term) || t.id.toString().includes(term));
+                }
+                if (filters.status) res = res.filter(t => t.status === filters.status);
+                if (filters.type) res = res.filter(t => t.type === filters.type);
+                setFilteredTickets(res);
+            };
+
+            useEffect(() => {
+                setFilteredTickets(tickets);
+            }, [tickets]);
+
+            const columns = Object.keys(STATUSES);
+
+            const reportColumns = [
+                { header: 'ID', field: 'id' },
+                { header: 'Título', field: 'title' },
+                { header: 'Prioridade', field: 'priority', format: (val) => PRIORITIES[val]?.label || val },
+                { header: 'Tipo', field: 'type' },
+                { header: 'Status', field: 'status', format: (val) => STATUSES[val]?.label || val },
+                { header: 'Criado em', field: 'createdAt', format: (val) => new Date(val).toLocaleDateString() }
+            ];
+
+            return (
+                <div className="p-6 h-full flex flex-col">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold text-slate-800">Service Desk</h2>
+                        <div className="flex space-x-2">
+                            <ReportButton
+                                data={filteredTickets}
+                                columns={reportColumns}
+                                title="Relatório de Chamados"
+                                filename="chamados_report"
+                            />
+                            <button onClick={() => setIsModalOpen(true)} className="bg-slate-900 text-white px-4 py-2 rounded-lg flex items-center space-x-2 hover:bg-slate-800">
+                                <Icon name="plus" size={18} />
+                                <span>Novo Chamado</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <FilterBar
+                        onFilter={handleFilter}
+                        statusOptions={Object.keys(STATUSES)}
+                        typeOptions={['Incidente', 'Requisição', 'Projeto']}
+                    />
+
+                    <div className="flex-1 overflow-x-auto">
+                        <div className="flex space-x-4 min-w-max h-full pb-4">
+                            {columns.map(statusKey => (
+                                <div key={statusKey} className="w-80 bg-slate-100 rounded-xl p-4 flex flex-col">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="font-semibold text-slate-700">{STATUSES[statusKey].label}</h3>
+                                        <span className="bg-slate-200 text-slate-600 text-xs px-2 py-1 rounded-full">
+                                            {filteredTickets.filter(t => t.status === statusKey).length}
+                                        </span>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+                                        {filteredTickets.filter(t => t.status === statusKey).map(ticket => (
+                                            <div key={ticket.id} className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 group hover:shadow-md transition">
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${PRIORITIES[ticket.priority].color}`}>
+                                                        {PRIORITIES[ticket.priority].label}
+                                                    </span>
+                                                    <span className="text-xs text-slate-400">#{ticket.id}</span>
+                                                </div>
+                                                <h4 className="font-medium text-slate-800 mb-1">{ticket.title}</h4>
+                                                <p className="text-xs text-slate-500 mb-3">{ticket.type}</p>
+                                                <div className="flex justify-end pt-2 border-t border-slate-50">
+                                                    <select
+                                                        className="text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none"
+                                                        value={ticket.status}
+                                                        onChange={(e) => updateTicketStatus(ticket.id, e.target.value)}
+                                                    >
+                                                        {Object.entries(STATUSES).map(([k, v]) => (
+                                                            <option key={k} value={k}>{v.label}</option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {isModalOpen && <TicketModal onClose={() => setIsModalOpen(false)} onSave={addTicket} />}
+                </div>
+            );
+        };
+
+        const TicketModal = ({ onClose, onSave }) => {
+            const [form, setForm] = useState({ title: '', priority: 'MEDIUM', type: 'Incidente', description: '' });
+            return (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-2xl">
+                        <h3 className="text-lg font-bold mb-4 text-slate-800">Novo Chamado</h3>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Título</label>
+                                <input
+                                    className="w-full border border-slate-300 bg-white text-slate-900 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none"
+                                    placeholder="Ex: Impressora sem toner"
+                                    value={form.title}
+                                    onChange={e => setForm({ ...form, title: e.target.value })}
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Prioridade</label>
+                                    <select
+                                        className="w-full border border-slate-300 bg-white text-slate-900 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none"
+                                        value={form.priority}
+                                        onChange={e => setForm({ ...form, priority: e.target.value })}
+                                    >
+                                        {Object.entries(PRIORITIES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Tipo</label>
+                                    <select
+                                        className="w-full border border-slate-300 bg-white text-slate-900 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none"
+                                        value={form.type}
+                                        onChange={e => setForm({ ...form, type: e.target.value })}
+                                    >
+                                        <option>Incidente</option><option>Requisição</option><option>Projeto</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Descrição do Problema</label>
+                                <textarea
+                                    className="w-full border border-slate-300 bg-white text-slate-900 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none"
+                                    rows="3"
+                                    placeholder="Descreva os detalhes..."
+                                    value={form.description}
+                                    onChange={e => setForm({ ...form, description: e.target.value })}
+                                ></textarea>
+                            </div>
+                        </div>
+                        <div className="flex justify-end space-x-2 mt-6">
+                            <button onClick={onClose} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">Cancelar</button>
+                            <button onClick={() => { onSave(form); onClose(); }} className="px-4 py-2 bg-slate-900 text-white rounded hover:bg-slate-800">Salvar</button>
+                        </div>
+
+            const handleEdit = (record) => {
+                            setEditingId(record.id);
+                        setEditForm({
+                            dateReturn: record.dateReturn || new Date().toISOString().split('T')[0],
+                        solution: record.solution || ''
+                });
+            };
+
+            const handleSave = (id) => {
+                            onUpdate(id, { ...editForm, status: 'CLOSED' });
+                        setEditingId(null);
+            };
+
+                        return (
+                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                            <div className="bg-white rounded-xl p-6 w-full max-w-2xl shadow-2xl max-h-[80vh] overflow-y-auto">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h3 className="text-lg font-bold text-slate-800">Histórico de Manutenção</h3>
+                                    <button onClick={onClose} className="text-slate-500 hover:text-slate-700"><Icon name="x" size={20} /></button>
+                                </div>
+                                <p className="text-sm text-slate-500 mb-4">Ativo: <strong>{asset.hostname}</strong></p>
+
+                                <div className="space-y-4">
+                                    {maintenanceRecords.length === 0 ? (
+                                        <p className="text-center text-slate-400 py-4">Nenhum registro encontrado.</p>
+                                    ) : (
+                                        maintenanceRecords.map(record => (
+                                            <div key={record.id} className="border border-slate-200 rounded-lg p-4 bg-slate-50">
+                                                <div className="flex justify-between mb-2">
+                                                    <span className="font-bold text-slate-700">O.S. {record.os}</span>
+                                                    <span className={`text-xs px-2 py-1 rounded-full ${record.status === 'OPEN' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
+                                                        {record.status === 'OPEN' ? 'Em Aberto' : 'Concluído'}
+                                                    </span>
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-4 text-sm mb-2">
+                                                    <div><span className="text-slate-500">Saída:</span> {new Date(record.dateOut).toLocaleDateString()}</div>
+                                                    <div><span className="text-slate-500">Prestador:</span> {record.provider}</div>
+                                                </div>
+                                                <p className="text-sm text-slate-600 mb-2"><strong>Motivo:</strong> {record.reason}</p>
+
+                                                {editingId === record.id ? (
+                                                    <div className="mt-3 bg-white p-3 rounded border border-blue-200">
+                                                        <div className="grid grid-cols-2 gap-2 mb-2">
+                                                            <div>
+                                                                <label className="text-xs text-slate-500">Data Retorno</label>
+                                                                <input type="date" className="w-full border p-1 rounded" value={editForm.dateReturn} onChange={e => setEditForm({ ...editForm, dateReturn: e.target.value })} />
+                                                            </div>
+                                                        </div>
+                                                        <div className="mb-2">
+                                                            <label className="text-xs text-slate-500">Solução / Observações</label>
+                                                            <textarea className="w-full border p-1 rounded" rows="2" value={editForm.solution} onChange={e => setEditForm({ ...editForm, solution: e.target.value })} />
+                                                        </div>
+                                                        <div className="flex justify-end space-x-2">
+                                                            <button onClick={() => setEditingId(null)} className="text-xs text-slate-500">Cancelar</button>
+                                                            <button onClick={() => handleSave(record.id)} className="text-xs bg-blue-600 text-white px-3 py-1 rounded">Salvar Retorno</button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        {record.dateReturn && (
+                                                            <div className="mt-2 pt-2 border-t border-slate-200">
+                                                                <p className="text-sm text-slate-600"><strong>Retorno:</strong> {new Date(record.dateReturn).toLocaleDateString()}</p>
+                                                                <p className="text-sm text-slate-600"><strong>Solução:</strong> {record.solution}</p>
+                                                            </div>
+                                                        )}
+                                                        {record.status === 'OPEN' && (
+                                                            <button onClick={() => handleEdit(record)} className="mt-2 text-xs text-blue-600 hover:underline">Registrar Retorno</button>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                        );
+        };
+
+        const AssetManager = () => {
+            const {assets, addAsset, deleteItem, maintenance, addMaintenance, updateMaintenance, updateAssetStatus} = useData();
+                        const [isModalOpen, setIsModalOpen] = useState(false);
+                        const [newAsset, setNewAsset] = useState({hostname: '', type: 'Notebook', brand: '', model: '', serial: '', status: 'Em Uso' });
+                        const [filteredAssets, setFilteredAssets] = useState(assets);
+                        const [selectedAssetForMaintenance, setSelectedAssetForMaintenance] = useState(null);
+                        const [selectedAssetForHistory, setSelectedAssetForHistory] = useState(null);
+
+            const handleFilter = (filters) => {
+                            let res = assets;
+                        if (filters.search) {
+                    const term = filters.search.toLowerCase();
+                    res = res.filter(a => a.hostname.toLowerCase().includes(term) || a.serial.toLowerCase().includes(term));
+                }
+                if (filters.status) res = res.filter(a => a.status === filters.status);
+                if (filters.type) res = res.filter(a => a.type === filters.type);
+                        setFilteredAssets(res);
+            };
+
+            useEffect(() => {
+                            setFilteredAssets(assets);
+            }, [assets]);
+
+            const handleMaintenanceSave = (record) => {
+                            addMaintenance(record);
+                        updateAssetStatus(record.assetId, 'Manutenção');
+            };
+
+            const handleMaintenanceUpdate = (id, updates) => {
+                            updateMaintenance(id, updates);
+                        // If maintenance is closed, set asset status back to 'Disponível' (or 'Em Uso' - user choice, defaulting to Disponível)
+                        if (updates.status === 'CLOSED') {
+                    // Find the record to get assetId
+                    const record = maintenance.find(m => m.id === id);
+                        if (record) {
+                            updateAssetStatus(record.assetId, 'Disponível');
+                    }
+                }
+            };
+
+                        const reportColumns = [
+                        {header: 'Hostname', field: 'hostname' },
+                        {header: 'Tipo', field: 'type' },
+                        {header: 'Marca/Modelo', field: 'brand', format: (val) => val }, // Simplified
+                        {header: 'Serial', field: 'serial' },
+                        {header: 'Status', field: 'status' }
+                        ];
+
+                        return (
+                        <div className="p-6">
+                            <div className="flex justify-between items-center mb-6">
+                                <h2 className="text-2xl font-bold text-slate-800">Inventário de Ativos</h2>
+                                <div className="flex space-x-2">
+                                    <ReportButton
+                                        data={filteredAssets}
+                                        columns={reportColumns}
+                                        title="Relatório de Ativos"
+                                        filename="ativos_report"
+                                    />
+                                    <button onClick={() => setIsModalOpen(true)} className="bg-slate-900 text-white px-4 py-2 rounded-lg flex items-center space-x-2">
+                                        <Icon name="plus" size={18} /> <span>Novo Ativo</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <FilterBar
+                                onFilter={handleFilter}
+                                statusOptions={['Em Uso', 'Disponível', 'Manutenção', 'Descartado']}
+                                typeOptions={['Notebook', 'Desktop', 'Servidor', 'Impressora', 'Outro']}
+                            />
+
+                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                <table className="w-full text-sm text-left">
+                                    <thead className="bg-slate-50 text-slate-500 font-medium border-b">
+                                        <tr>
+                                            <th className="p-4">Hostname</th>
+                                            <th className="p-4">Tipo</th>
+                                            <th className="p-4">Modelo</th>
+                                            <th className="p-4">Serial</th>
+                                            <th className="p-4">Status</th>
+                                            <th className="p-4 text-right">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {filteredAssets.map(asset => (
+                                            <tr key={asset.id} className="hover:bg-slate-50">
+                                                <td className="p-4 font-medium text-slate-800">{asset.hostname}</td>
+                                                <td className="p-4 text-slate-600">{asset.type}</td>
+                                                <td className="p-4 text-slate-600">{asset.brand} {asset.model}</td>
+                                                <td className="p-4 text-slate-500 font-mono text-xs">{asset.serial}</td>
+                                                <td className="p-4">
+                                                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${asset.status === 'Em Uso' ? 'bg-green-100 text-green-700' :
+                                                        asset.status === 'Manutenção' ? 'bg-yellow-100 text-yellow-700' : 'bg-slate-100 text-slate-600'
+                                                        }`}>{asset.status}</span>
+                                                </td>
+                                                <td className="p-4 text-right flex justify-end space-x-2">
+                                                    <button onClick={() => setSelectedAssetForMaintenance(asset)} title="Manutenção" className="text-yellow-600 hover:text-yellow-800"><Icon name="tool" size={16} /></button>
+                                                    <button onClick={() => setSelectedAssetForHistory(asset)} title="Histórico" className="text-blue-600 hover:text-blue-800"><Icon name="history" size={16} /></button>
+                                                    <button onClick={() => deleteItem('assets', asset.id)} title="Excluir" className="text-red-500 hover:text-red-700"><Icon name="trash-2" size={16} /></button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            {isModalOpen && (
+                                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                                    <div className="bg-white rounded-xl p-6 w-full max-w-lg shadow-2xl">
+                                        <h3 className="text-lg font-bold mb-4">Adicionar Ativo</h3>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <input className="border p-2 rounded" placeholder="Hostname" value={newAsset.hostname} onChange={e => setNewAsset({ ...newAsset, hostname: e.target.value })} />
+                                            <select className="border p-2 rounded" value={newAsset.type} onChange={e => setNewAsset({ ...newAsset, type: e.target.value })}>
+                                                <option>Notebook</option><option>Desktop</option><option>Servidor</option><option>Impressora</option><option>Outro</option>
+                                            </select>
+                                            <input className="border p-2 rounded" placeholder="Marca" value={newAsset.brand} onChange={e => setNewAsset({ ...newAsset, brand: e.target.value })} />
+                                            <input className="border p-2 rounded" placeholder="Modelo" value={newAsset.model} onChange={e => setNewAsset({ ...newAsset, model: e.target.value })} />
+                                            <input className="border p-2 rounded" placeholder="Serial" value={newAsset.serial} onChange={e => setNewAsset({ ...newAsset, serial: e.target.value })} />
+                                            <input className="border p-2 rounded" placeholder="Usuário Responsável" value={newAsset.user} onChange={e => setNewAsset({ ...newAsset, user: e.target.value })} />
+                                        </div>
+                                        <div className="flex justify-end space-x-2 mt-6">
+                                            <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600">Cancelar</button>
+                                            <button onClick={() => { addAsset(newAsset); setIsModalOpen(false); }} className="px-4 py-2 bg-slate-900 text-white rounded">Salvar</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {selectedAssetForMaintenance && (
+                                <MaintenanceModal
+                                    asset={selectedAssetForMaintenance}
+                                    onClose={() => setSelectedAssetForMaintenance(null)}
+                                    onSave={handleMaintenanceSave}
+                                />
+                            )}
+
+                            {selectedAssetForHistory && (
+                                <MaintenanceHistoryModal
+                                    asset={selectedAssetForHistory}
+                                    maintenanceRecords={maintenance ? maintenance.filter(m => m.assetId === selectedAssetForHistory.id) : []}
+                                    onClose={() => setSelectedAssetForHistory(null)}
+                                    onUpdate={handleMaintenanceUpdate}
+                                />
+                            )}
+                        </div>
+                        );
+        };
+
+        const CertificateManager = () => {
+            const {certificates, addCertificate, deleteItem} = useData();
+                        const [isModalOpen, setIsModalOpen] = useState(false);
+                        const [newCert, setNewCert] = useState({name: '', provider: '', expirationDate: '' });
+                        const [filteredCertificates, setFilteredCertificates] = useState(certificates);
+
+            const handleFilter = (filters) => {
+                            let res = certificates;
+                        if (filters.search) {
+                    const term = filters.search.toLowerCase();
+                    res = res.filter(c => c.name.toLowerCase().includes(term) || c.provider.toLowerCase().includes(term));
+                }
+                        setFilteredCertificates(res);
+            };
+
+            useEffect(() => {
+                            setFilteredCertificates(certificates);
+            }, [certificates]);
+
+                        const reportColumns = [
+                        {header: 'Nome', field: 'name' },
+                        {header: 'Fornecedor', field: 'provider' },
+                        {header: 'Expiração', field: 'expirationDate', format: (val) => new Date(val).toLocaleDateString() }
+                        ];
+
+                        return (
+                        <div className="p-6">
+                            <div className="flex justify-between items-center mb-6">
+                                <h2 className="text-2xl font-bold text-slate-800">Gestão de Certificados</h2>
+                                <div className="flex space-x-2">
+                                    <ReportButton
+                                        data={filteredCertificates}
+                                        columns={reportColumns}
+                                        title="Relatório de Certificados"
+                                        filename="certificados_report"
+                                    />
+                                    <button onClick={() => setIsModalOpen(true)} className="bg-slate-900 text-white px-4 py-2 rounded-lg flex items-center space-x-2">
+                                        <Icon name="plus" size={18} /> <span>Novo Certificado</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <FilterBar onFilter={handleFilter} />
+
+                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                <table className="w-full text-sm text-left">
+                                    <thead className="bg-slate-50 text-slate-500 font-medium border-b">
+                                        <tr>
+                                            <th className="p-4">Nome / Descrição</th>
+                                            <th className="p-4">Fornecedor</th>
+                                            <th className="p-4">Data Expiração</th>
+                                            <th className="p-4">Status</th>
+                                            <th className="p-4 text-right">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {filteredCertificates.map(cert => {
+                                            const days = Math.ceil((new Date(cert.expirationDate) - new Date()) / (1000 * 60 * 60 * 24));
+                                            const isExpired = days < 0;
+                                            const isWarning = days < 30 && !isExpired;
+
+                                            return (
+                                                <tr key={cert.id} className={`hover:bg-slate-50 ${isExpired ? 'bg-red-50/50' : isWarning ? 'bg-orange-50/50' : ''}`}>
+                                                    <td className="p-4 font-medium text-slate-800">{cert.name}</td>
+                                                    <td className="p-4 text-slate-600">{cert.provider}</td>
+                                                    <td className="p-4 text-slate-600 font-mono">{new Date(cert.expirationDate).toLocaleDateString()}</td>
+                                                    <td className="p-4">
+                                                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${isExpired ? 'bg-red-100 text-red-700' :
+                                                            isWarning ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'
+                                                            }`}>
+                                                            {isExpired ? 'VENCIDO' : isWarning ? `VENCE EM ${days} DIAS` : 'VIGENTE'}
+                                                        </span>
+                                                    </td>
+                                                    <td className="p-4 text-right">
+                                                        <button onClick={() => deleteItem('certificates', cert.id)} className="text-red-500 hover:text-red-700"><Icon name="trash-2" size={16} /></button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            {isModalOpen && (
+                                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                                    <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-2xl">
+                                        <h3 className="text-lg font-bold mb-4">Adicionar Certificado</h3>
+                                        <div className="space-y-4">
+                                            <input className="w-full border p-2 rounded" placeholder="Nome" value={newCert.name} onChange={e => setNewCert({ ...newCert, name: e.target.value })} />
+                                            <input className="w-full border p-2 rounded" placeholder="Fornecedor" value={newCert.provider} onChange={e => setNewCert({ ...newCert, provider: e.target.value })} />
+                                            <input type="date" className="w-full border p-2 rounded" value={newCert.expirationDate} onChange={e => setNewCert({ ...newCert, expirationDate: e.target.value })} />
+                                        </div>
+                                        <div className="flex justify-end space-x-2 mt-6">
+                                            <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600">Cancelar</button>
+                                            <button onClick={() => { addCertificate(newCert); setIsModalOpen(false); }} className="px-4 py-2 bg-slate-900 text-white rounded">Salvar</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        );
+        };
+
+        const KnowledgeBase = () => {
+            const {kb} = useData();
+                        return (
+                        <div className="p-6">
+                            <h2 className="text-2xl font-bold text-slate-800 mb-6">Base de Conhecimento</h2>
+                            <div className="grid gap-4">
+                                {kb.map(a => (
+                                    <div key={a.id} className="bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <h3 className="font-bold text-slate-800">{a.title}</h3>
+                                            <span className="text-xs bg-slate-100 px-2 py-1 rounded text-slate-600">{a.category}</span>
+                                        </div>
+                                        <p className="text-sm text-slate-600">{a.content}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        );
+        };
+
+        const WhatsAppModule = () => {
+            const [status, setStatus] = useState('DISCONNECTED');
+                        const [qrCode, setQrCode] = useState(null);
+                        const [socket, setSocket] = useState(null);
+                        const [messages, setMessages] = useState([]);
+                        const [input, setInput] = useState('');
+                        const [targetNumber, setTargetNumber] = useState('');
+
+            useEffect(() => {
+                const newSocket = io('http://localhost:3000');
+                        setSocket(newSocket);
+
+                newSocket.on('connect', () => {
+                            console.log('Conectado ao servidor Socket.io');
+                });
+
+                newSocket.on('status', (data) => {
+                            setStatus(data.status);
+                        if (data.qrCode) setQrCode(data.qrCode);
+                });
+
+                newSocket.on('message', (msg) => {
+                            setMessages(prev => [...prev, msg]);
+                });
+
+                return () => newSocket.disconnect();
+            }, []);
+
+            const sendMessage = () => {
+                if (!input || !targetNumber) return;
+                        const to = targetNumber.includes('@') ? targetNumber : `${targetNumber}@c.us`;
+                        socket.emit('send_message', {to, message: input });
+                setMessages(prev => [...prev, {id: Date.now(), body: input, fromMe: true, timestamp: Date.now() / 1000 }]);
+                        setInput('');
+            };
+
+                        return (
+                        <div className="p-6 h-full flex flex-col">
+                            <h2 className="text-2xl font-bold text-slate-800 mb-6">WhatsApp Integration</h2>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 h-full">
+                                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 h-fit">
+                                    <h3 className="font-bold text-slate-700 mb-4">Status da Conexão</h3>
+                                    <div className="flex items-center space-x-2 mb-4">
+                                        <div className={`w-3 h-3 rounded-full ${status === 'CONNECTED' ? 'bg-green-500' : status === 'QRCODE' ? 'bg-yellow-500' : 'bg-red-500'}`}></div>
+                                        <span className="font-medium text-slate-600">{status}</span>
+                                    </div>
+                                    {status === 'QRCODE' && qrCode && (
+                                        <div className="flex flex-col items-center">
+                                            <p className="text-sm text-slate-500 mb-2">Escaneie para conectar:</p>
+                                            <img src={qrCode} alt="QR Code WhatsApp" className="w-48 h-48 border border-slate-200 rounded-lg" />
+                                        </div>
+                                    )}
+                                    {status === 'CONNECTED' && (
+                                        <div className="text-green-600 text-sm bg-green-50 p-3 rounded-lg flex items-center space-x-2">
+                                            <Icon name="check-circle" size={16} />
+                                            <span>Bot Ativo e Pronto!</span>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="md:col-span-2 bg-white rounded-xl shadow-sm border border-slate-100 flex flex-col h-[600px]">
+                                    <div className="p-4 border-b border-slate-100 flex justify-between items-center">
+                                        <div className="flex items-center space-x-2">
+                                            <Icon name="message-circle" className="text-green-600" />
+                                            <span className="font-bold text-slate-700">Chat Direto</span>
+                                        </div>
+                                        <input className="text-sm border rounded px-2 py-1 w-48" placeholder="Número (ex: 5511999999999)" value={targetNumber} onChange={e => setTargetNumber(e.target.value)} />
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
+                                        {messages.map((msg, idx) => (
+                                            <div key={idx} className={`flex ${msg.fromMe || msg.isMine ? 'justify-end' : 'justify-start'}`}>
+                                                <div className={`max-w-[70%] p-3 rounded-lg text-sm ${msg.fromMe || msg.isMine ? 'bg-green-100 text-green-900 rounded-tr-none' : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'}`}>
+                                                    <p>{msg.body}</p>
+                                                    <span className="text-[10px] opacity-70 block text-right mt-1">{new Date(msg.timestamp * 1000).toLocaleTimeString()}</span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="p-4 border-t border-slate-100 bg-white rounded-b-xl">
+                                        <div className="flex space-x-2">
+                                            <input className="flex-1 border border-slate-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500" placeholder="Digite sua mensagem..." value={input} onChange={e => setInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && sendMessage()} />
+                                            <button onClick={sendMessage} className="bg-green-600 text-white p-2 rounded-lg hover:bg-green-700 transition" disabled={status !== 'CONNECTED'}><Icon name="send" size={20} /></button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        );
+        };
+
+        const Reports = () => (
+                        <div className="p-6">
+                            <h2 className="text-2xl font-bold text-slate-800 mb-6">Relatórios</h2>
+                            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100">
+                                <p className="text-slate-600">Os relatórios detalhados estão disponíveis diretamente em cada módulo:</p>
+                                <ul className="list-disc list-inside mt-4 space-y-2 text-slate-700">
+                                    <li><strong>Service Desk:</strong> Relatório de Chamados (filtrar por status, tipo, busca)</li>
+                                    <li><strong>Ativos:</strong> Relatório de Inventário (filtrar por tipo, status, busca)</li>
+                                    <li><strong>Certificados:</strong> Relatório de Vencimentos</li>
+                                </ul>
+                            </div>
+                        </div>
+                        );
+
+        const App = () => {
+            const [activePage, setActivePage] = useState('dashboard');
+
+                        const menu = [
+                        {id: 'dashboard', label: 'Dashboard', icon: 'layout-dashboard' },
+                        {id: 'tickets', label: 'Service Desk', icon: 'trello' },
+                        {id: 'assets', label: 'Ativos', icon: 'monitor' },
+                        {id: 'certificates', label: 'Certificados', icon: 'shield' },
+                        {id: 'kb', label: 'Conhecimento', icon: 'book-open' },
+                        {id: 'whatsapp', label: 'WhatsApp', icon: 'message-circle' },
+                        {id: 'reports', label: 'Relatórios', icon: 'file-bar-chart' },
+                        ];
+
+                        return (
+                        <div className="flex min-h-screen">
+                            <div className="w-64 bg-slate-900 text-white flex flex-col fixed h-full no-print">
+                                <div className="p-6 flex items-center space-x-3 border-b border-slate-800">
+                                    <Icon name="snowflake" className="text-blue-400" />
+                                    <span className="text-xl font-bold tracking-tight">Frizelo IT</span>
+                                </div>
+                                <nav className="flex-1 p-4 space-y-1">
+                                    {menu.map(item => (
+                                        <button
+                                            key={item.id}
+                                            onClick={() => setActivePage(item.id)}
+                                            className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition ${activePage === item.id ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+                                        >
+                                            <Icon name={item.icon} size={20} />
+                                            <span>{item.label}</span>
+                                        </button>
+                                    ))}
+                                </nav>
+                                <div className="p-4 border-t border-slate-800 text-xs text-slate-500 text-center">
+                                    v2.0.0 • Frizelo Systems
+                                </div>
+                            </div>
+                            <main className="flex-1 ml-64 bg-gray-50 min-h-screen">
+                                {activePage === 'dashboard' && <Dashboard />}
+                                {activePage === 'tickets' && <KanbanBoard />}
+                                {activePage === 'assets' && <AssetManager />}
+                                {activePage === 'certificates' && <CertificateManager />}
+                                {activePage === 'kb' && <KnowledgeBase />}
+                                {activePage === 'whatsapp' && <WhatsAppModule />}
+                                {activePage === 'reports' && <Reports />}
+                            </main>
+                        </div>
+                        );
+        };
+
+        const Root = () => (
+                        <DataProvider>
+                            <App />
+                        </DataProvider>
+                        );
+
+                        const root = ReactDOM.createRoot(document.getElementById('root'));
+                        root.render(<Root />);
+    </script>
+</body>
+
+</html>
